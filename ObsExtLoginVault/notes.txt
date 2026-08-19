@@ -1,0 +1,4 @@
+Prompts:
+Build an Obsidian plugin that allows users to store and retrieve login credentials for various websites and services. The plugin should provide a secure and organized way to manage login information, including usernames, passwords, and any other relevant details. The plugin should also offer features such as password generation, 
+password strength checking, and the ability to export and import login credentials. store all credentials in a file in the vault, encrypted with a key derived from a password provided by the user. The plugin should support face id, fingerprint, and pin code for authentication instead of the password, on mobile, and pin or password on desktop. 
+The plugin should be able to sync with other devices using obsidian sync. 
