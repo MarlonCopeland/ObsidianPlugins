@@ -1,8 +1,8 @@
 # Login Vault — Plugin Documentation
 
-> **Version:** 1.0.0 | **Last Updated:** 2026-03-09
+> **Version:** 1.2.0 | **Last Updated:** 2026-11-05
 
-Login Vault is an Obsidian plugin that provides encrypted, organized storage and retrieval of login credentials directly inside your vault. All data is stored in a single encrypted file, compatible with Obsidian Sync.
+Login Vault is an Obsidian plugin that provides encrypted, organized storage and retrieval of login credentials directly inside your vault. All data is stored in a single encrypted file. It can sync through Obsidian Sync, but only if "Sync all other types" is turned on (see [Syncing](#syncing)).
 
 ---
 
@@ -67,14 +67,17 @@ Login Vault is an Obsidian plugin that provides encrypted, organized storage and
 
 ### Master Password
 - The master password is **never stored anywhere**
-- A salted SHA-256 hash of the password is stored in the encrypted file's header for unlock verification only
+- There is **no stored password hash**. A wrong password simply fails the AES-GCM authentication tag when decrypting. (Files from v1.0/1.1 contained a fast `SHA-256(password+salt)` check that let someone with a copy of the file guess passwords without paying the PBKDF2 cost; it is removed from the file the first time v1.2 unlocks it. Copies of the old file — for example in Obsidian Sync version history — still contain it, so consider changing the master password.)
 - The derived `CryptoKey` object is held in **memory only** for the duration of the unlocked session
+- Use a long passphrase: it is the real protection. Setup and password change require at least 10 characters and a zxcvbn score of 3
 
-### PIN
-- The PIN is stored as a salted SHA-256 hash in the plugin's `data.json` (synced via Obsidian Sync), used as a fast pre-check
-- The real vault key is also **wrapped** — encrypted with a separate key derived from the PIN via PBKDF2 — and that wrapped blob is stored alongside the hash
-- On PIN unlock, the plugin re-derives the PIN key and unwraps the vault key from that blob, so a cold start (app fully closed, no key in memory) works from the PIN alone, without needing the master password
-- Changing the master password re-encrypts the vault with a new key, which invalidates any existing PIN's wrapped blob — the plugin clears the PIN on password change and prompts the user to set a new one
+### PIN (quick unlock, per device)
+- The PIN is **device-local**: it lives in Obsidian's vault-scoped local storage (`app.saveLocalStorage`) and is **never written to `data.json`**, which syncs to other devices
+- It is 6–12 digits. The vault key is wrapped with a key derived from the PIN (PBKDF2); there is no separate PIN hash, so a wrong PIN simply fails the AES-GCM tag
+- After **5 wrong PINs** the PIN is erased and the master password is required
+- Be clear about the limit: anyone who can copy this device's files can brute-force a numeric PIN offline, and the attempt counter only guards the plugin UI. Treat the PIN as a convenience, not a second factor
+- Changing the master password (here or on another device) invalidates the PIN on every device; set a new one
+- v1.1 stored PIN material in `data.json`. v1.2 deletes it on first load; set a new PIN
 
 ### Biometric
 Biometric unlock (Face ID / fingerprint via WebAuthn) was removed. A biometric assertion on this platform doesn't yield reusable key material the way a password or PIN does — there's no OS-backed secure enclave API exposed to Obsidian plugins to bind an assertion to a stored secret. Implementing it would mean either it silently fails after every restart (the original bug), or storing the vault-key-wrapping secret unprotected in `data.json`, which would let anyone with filesystem access decrypt the vault without any biometric check at all — worse than not having the feature.
@@ -85,12 +88,25 @@ Stored as a JSON envelope in the vault root:
 {
   "version": 1,
   "salt": "<base64 — 16 bytes>",
-  "verificationHash": "<base64 — SHA-256 of password+salt>",
   "iv": "<base64 — 12 bytes>",
   "ciphertext": "<base64 — AES-256-GCM encrypted payload>"
 }
 ```
-The plaintext payload (before encryption) is a JSON array of `CredentialEntry` objects.
+The plaintext payload (before encryption) is a JSON array of `CredentialEntry` objects. Files written by v1.0/1.1 also have a `verificationHash` field; it is ignored and removed on the next save.
+
+### Syncing
+
+<a id="syncing"></a>
+
+- **Obsidian Sync does not sync unknown file types by default.** Turn on **Settings → Sync → Selective sync → "Sync all other types"** on *every* device. It is a per-device setting; a device without it may not receive the vault (and has been reported to cause such files to be removed remotely).
+- **Every write is read → decrypt → three-way merge → write**, serialized through a queue. The merge (`src/merge.ts`) compares this device's memory, the file on disk, and the state at the last load/save, so entries added on two devices are both kept, a deletion is not resurrected, and an edit beats a deletion made elsewhere.
+- **Changes from other devices are picked up automatically** while the vault is unlocked (a debounced watcher on the vault file). Your own writes are recognised and ignored.
+- **Password changed on another device:** this device locks and asks for the new password instead of writing a file nobody can decrypt.
+- **Vault file removed (for example by a sync):** it is re-created from memory on the next change, with a notice.
+- **First run on a second device** asks whether you already have a vault; "wait for it" polls for the file. The setup wizard will not overwrite an existing vault file.
+- **Backups:** up to 8 encrypted snapshots are kept in `.obsidian/plugins/login-vault/backups/` (device-local, not synced), taken before writes at most every 2 minutes. If the vault file is damaged, the unlock screen reports it as damaged (not "wrong password") and offers *Restore latest backup*.
+- **Reset** moves the vault file to the vault trash (after a backup) instead of permanently deleting it.
+- Remaining limitation: the vault is still one file. If two devices write at almost the same moment and the sync service keeps only one copy, one change can be lost; the next sync reload merges whatever survives. Per-entry files are a possible future step.
 
 ---
 
@@ -99,12 +115,13 @@ The plaintext payload (before encryption) is a JSON array of `CredentialEntry` o
 | Method | Desktop | Mobile | Notes |
 |---|---|---|---|
 | Master Password | ✅ | ✅ | Required for first unlock, or any time no PIN is set |
-| PIN Code | ✅ | ✅ | 4–8 digit numeric code; unwraps the real vault key, works from a cold start |
+| PIN Code | ✅ | ✅ | 6–12 digit numeric code, stored on this device only; unwraps the vault key, works from a cold start; erased after 5 wrong tries |
 
 ### Session & Auto-Lock
-- An auto-lock timer resets on every user interaction
+- Activity (key, pointer, touch, wheel) extends the session, but only while it is still valid
 - Configurable timeout: 1 minute to 60 minutes (default: 5 minutes), or disabled
-- On lock, the in-memory `CryptoKey` is invalidated immediately
+- The timeout is a **deadline checked against the clock**, not just a timer: mobile OSes suspend timers in the background, so the deadline is also checked whenever the app regains focus and whenever the session key is requested
+- On lock (manual, timer, or because the vault was invalidated) the in-memory key is dropped, **every open credential/generator dialog closes**, and a copied secret is cleared from the clipboard
 
 ---
 
@@ -123,9 +140,11 @@ ObsExtLoginVault/               ← Obsidian vault root
 └── src/
     ├── main.ts                 ← Plugin entry point
     ├── types.ts                ← TypeScript interfaces
-    ├── crypto.ts               ← Encryption / decryption / PBKDF2
-    ├── store.ts                ← Credential CRUD + file I/O
-    ├── auth.ts                 ← Session, PIN auth
+    ├── crypto.ts               ← Encryption / decryption / PBKDF2 / key wrapping
+    ├── merge.ts                ← Pure three-way merge of credential lists
+    ├── store.ts                ← Credential CRUD, sync-safe file I/O, backups
+    ├── device-store.ts         ← Device-local (unsynced) key/value storage
+    ├── auth.ts                 ← Session, PIN, auto-lock deadline, lock events
     ├── password-gen.ts         ← Password generator + strength checker
     └── ui/
         ├── VaultView.ts        ← Main sidebar view (credential list)
@@ -135,6 +154,8 @@ ObsExtLoginVault/               ← Obsidian vault root
         ├── CredentialDetailModal.ts ← Read-only detail + copy buttons
         ├── PasswordGenModal.ts ← Password generator UI
         └── SettingsTab.ts      ← Plugin settings tab
+
+tests/vault.test.mjs            ← Node tests (npm test): merge, crypto, two-device sync, PIN, auto-lock
 ```
 
 ---
@@ -181,33 +202,41 @@ interface PluginSettings {
 | `generateIV()` | Returns 12 random bytes as base64 |
 | `deriveKey(password, salt)` | PBKDF2-SHA256 → AES-256-GCM CryptoKey |
 | `encryptData(key, plaintext)` | Returns `{ iv, ciphertext }` as base64 |
-| `decryptData(key, iv, ciphertext)` | Returns UTF-8 plaintext string |
-| `hashForVerification(password, salt)` | SHA-256(password + salt), base64 |
+| `decryptData(key, iv, ciphertext)` | Returns UTF-8 plaintext; throws if the key is wrong or the data was tampered with |
+| `wrapKeyRaw` / `unwrapKeyRaw` | Wrap the vault key with a PIN-derived key (device-local quick unlock) |
+
+Base64 conversion is chunked, so large vaults no longer overflow the call stack.
+
+### `src/merge.ts`
+`merge(base, local, remote)` — pure three-way merge by entry `id`. `snapshot()` / `sameSnapshot()` record and compare `id → updatedAt`.
 
 ### `src/store.ts`
 | Method | Description |
 |---|---|
-| `isInitialized()` | Check if `login-vault.enc` exists |
-| `load(key)` | Decrypt and load credentials into memory |
-| `save(key)` | Encrypt and write credentials to disk |
-| `getAllCredentials()` | Return in-memory credential array |
-| `addCredential(entry)` | Add + auto-save |
-| `updateCredential(id, changes)` | Update + auto-save |
-| `deleteCredential(id)` | Remove + auto-save |
-| `exportJSON(encrypted?)` | Export as JSON (plain or re-encrypted) |
-| `exportCSV()` | Export as plaintext CSV (warns user) |
-| `importJSON(json, key)` | Merge imported credentials |
+| `isInitialized()` / `readState()` | File exists / classify as `ok`, `missing`, `corrupt` |
+| `initialize(key, salt)` | Create the vault; refuses if a vault file already exists |
+| `unlockWithKey(key)` | Decrypt and load credentials (decryption is the password check) |
+| `addCredential` / `updateCredential` / `deleteCredential` | Read → merge → mutate → write, serialized |
+| `syncFromDisk(key)` / `hasExternalChange()` | Merge in another device's changes; ignore our own writes |
+| `changeMasterPassword(currentKey, newKey, newSalt)` | Merge, then re-key and write |
+| `exportJSON()` / `exportCSV()` | Plaintext exports (CSV cells starting `= + - @` are neutralised against formula injection) |
+| `importJSON(json, key)` | Validate and merge imported credentials |
+| `listBackups()` / `backupNow()` / `restoreLatestBackup()` | Encrypted rolling backups |
+
+Raises `VaultKeyChangedError` (password changed elsewhere) and `VaultCorruptError`, and calls `onInvalidated` so the plugin can lock.
 
 ### `src/auth.ts`
 | Method | Description |
 |---|---|
 | `setupMasterPassword(password)` | Initialize vault with new master password |
-| `unlock(password)` | Derive key, verify, store in session |
-| `lock()` | Clear session key, reset timer |
-| `isLocked()` | Returns boolean |
-| `setupPIN(pin)` | Hash PIN + wrap vault key with a PIN-derived key; store both in settings |
-| `unlockWithPIN(pin)` | Verify hash, unwrap vault key, re-authorize session |
-| `resetAutoLock(minutes)` | Call on user activity |
+| `unlock(password)` | Derive key, decrypt, start session; sets `lastFailure` (`wrong-password`, `corrupt`, `missing`) |
+| `lock()` | Clear session key, notify `onLock` listeners |
+| `isLocked()` | Returns boolean (also enforces the auto-lock deadline) |
+| `changeMasterPassword(current, new)` | Verifies the current password by decrypting, then re-keys; clears this device's PIN |
+| `setupPIN(pin)` / `removePIN()` / `hasPIN()` | Device-local PIN (6–12 digits) |
+| `unlockWithPIN(pin)` | Unwrap the vault key; 5 wrong tries erases the PIN |
+| `resetAutoLock(minutes)` / `noteActivity()` / `checkDeadline()` | Deadline-based auto-lock |
+| `onLock(listener)` | Subscribe to every lock |
 
 ### `src/password-gen.ts`
 | Function | Description |
@@ -233,25 +262,29 @@ interface PluginSettings {
 
 ### VaultView (Sidebar)
 - Registered as a custom `ItemView` in the left sidebar
-- Shows searchable, filterable list of credential cards
-- Each card shows: title, username, URL favicon (if available), tags
-- Floating "+ Add" button opens `CredentialModal`
-- Header buttons: ❓ Help (opens `HelpModal`), ⬇️ Export all credentials to CSV, 🔒 Lock (`auth.lock()` + shows `UnlockModal` next time)
-- ❓ Help button is also shown on the locked screen (the first thing you see after opening the view), so instructions are available before unlocking
+- Shows a searchable list of credential rows with a horizontally scrolling tag filter
+- Each row shows: title, username, domain, tags, and **visible buttons** to copy the username, copy the password, and open a menu (edit / delete). Right-click still works on desktop
+- Floating "+" button opens `CredentialModal`
+- Header buttons (Lucide icons with accessible labels): Help, Export all credentials to CSV, Lock
+- A locked view shows an Unlock button; it never opens a password dialog by itself when Obsidian restores the view at startup
+- Help is also available on the locked screen
 
 ### HelpModal
 - Quick-reference instructions: adding/finding credentials, locking & unlocking, copying passwords, export/import, and what to do if you forget your password
 - Opened from the ❓ button on both the locked screen and the unlocked header
 
 ### UnlockModal
-- Shown automatically when the vault is locked and a credential action is attempted
+- Shown when you open the vault (ribbon / command) or press Unlock
 - **Password mode:** Password input + "Unlock" button
-- **PIN mode:** 4–8 digit keypad overlay
+- **PIN mode:** 6–12 digit keypad, also accepts the physical keyboard; opens on the PIN tab when a PIN is set on this device
+- Closing it any way (Esc, tapping outside) always settles the caller — the view never hangs
+- Tells a damaged vault file apart from a wrong password and offers *Restore latest backup*
 
 ### SetupModal (First Run)
-Three-step wizard shown when no `login-vault.enc` exists:
-1. Create + confirm master password (with real-time strength meter)
-2. Optionally set a PIN (can be skipped)
+Shown when no `login-vault.enc` exists:
+0. Choose: create a new vault, or "I already have a vault on another device" (polls until it arrives). If this device had a vault before, the file is reported as missing and a backup can be restored
+1. Create + confirm master password (min 10 characters, zxcvbn score 3, real-time strength meter)
+2. Optionally set a device-local PIN (can be skipped)
 3. Done screen with usage tips
 
 ### CredentialModal (Add / Edit)
@@ -278,9 +311,10 @@ Settings registered via `addSettingTab()`:
 - Auto-lock timeout (dropdown)
 - Clipboard auto-clear delay (dropdown)
 - Change master password (requires current password)
-- Set / change / remove PIN (requires vault to be unlocked; cleared automatically if the master password changes)
-- Export: Encrypted JSON | Plaintext JSON | CSV
-- Import: JSON file
+- Set / change / remove this device's PIN (requires vault to be unlocked; cleared automatically if the master password changes)
+- Sync and backups: vault file status, Obsidian Sync guidance, back up now
+- Export: Plaintext JSON | CSV (both warn that they are unencrypted)
+- Import: JSON file (entries are validated)
 - Reset vault (confirmation required)
 
 ---
@@ -298,11 +332,13 @@ Settings registered via `addSettingTab()`:
 | Master password auth | ✅ Implemented |
 | PIN auth (works from cold start) | ✅ Implemented |
 | Auto-lock timer (locks UI too, not just data) | ✅ Implemented |
-| Export: Encrypted JSON | ✅ Implemented |
 | Export: Plaintext JSON / CSV | ✅ Implemented (with warning; CSV also available directly from the vault view) |
+| Encrypted export | ❌ Not implemented (planned) |
 | Import: JSON | ✅ Implemented |
 | In-app help (❓ button) | ✅ Implemented |
-| Obsidian Sync compatible | ✅ By design (file in vault root) |
+| Merge changes from other devices | ✅ Three-way merge, automatic reload |
+| Encrypted rolling backups + restore | ✅ Implemented |
+| Obsidian Sync | ⚠️ Works only with "Sync all other types" enabled on every device |
 
 ---
 
@@ -368,6 +404,10 @@ npm run dev
 
 # Production build
 npm run build
+
+# Type-check and run the tests
+npm run typecheck
+npm test
 ```
 
 ### Installing in Obsidian (development)
@@ -389,6 +429,30 @@ Enable the plugin in: **Settings → Community Plugins → Login Vault**
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-11-05
+Security, sync-safety and UI fixes. **Update the plugin on all your devices**: v1.1 cannot unlock a file saved by v1.2 (the password hash it requires is gone).
+
+**Sync and data safety**
+- **Fix:** A device that was open while another device changed the vault no longer overwrites those changes. Every save now reads the file, merges (three-way, by entry), then writes; changes from other devices are picked up automatically.
+- **Fix:** Changing the master password on one device no longer lets another, still-unlocked device write a vault nobody can decrypt; it locks and asks for the new password.
+- **Fix:** The first-run wizard can no longer overwrite an existing vault. A second device is asked whether a vault already exists and waits for it to sync. Settings now explain that Obsidian Sync needs "Sync all other types".
+- **Fix:** A damaged vault file is reported as damaged instead of "Incorrect password", with one-click restore from the rolling encrypted backups.
+- **Fix:** Saving a large vault no longer fails on mobile (base64 conversion overflowed the call stack).
+- **Changed:** Reset moves the vault file to the vault trash (after a backup) instead of permanently deleting it. Saves are serialized.
+
+**Security**
+- **Fixed:** The stored `SHA-256(password+salt)` check allowed fast offline password guessing. It is removed; a wrong password now fails the AES-GCM tag.
+- **Fixed:** PIN material was in the synced `data.json` and protected only by a 4–8 digit PIN. The PIN is now device-local (never synced), 6–12 digits, has no separate hash, and erases itself after 5 wrong tries. The old PIN is deleted on upgrade; set a new one. (A numeric PIN is still guessable by someone who can copy the device's files.)
+- **Fixed:** Auto-lock now uses a deadline checked against the clock (mobile suspends timers), counts pointer/touch/scroll activity, closes every open credential dialog, and clears a copied secret from the clipboard.
+- **Fixed:** "Copy password" in the right-click menu bypassed the clipboard auto-clear. The clipboard is only cleared if it still holds the copied value.
+- **Changed:** Master password: min 10 characters and zxcvbn score 3. CSV export neutralises spreadsheet formulas. Imports are validated. Secret inputs disable autocomplete and spellcheck.
+
+**Interface**
+- **Fixed:** Pressing Esc or tapping outside the unlock dialog no longer leaves a blank pane, and Obsidian no longer shows a password prompt every time it restores the view at startup.
+- **Changed:** Follows your Obsidian theme (light, dark, community themes) instead of a fixed dark palette; all styles are scoped to the plugin (a global `.modal-content` rule no longer affects other modals).
+- **Changed:** Lucide icons with accessible labels replace emoji; each row has visible copy-username, copy-password and menu buttons (right-click isn't needed on mobile); the tag filter scrolls in one row; touch targets are 44 px on touch devices; the PIN pad accepts the keyboard.
+- **Removed from docs:** favicon and encrypted-export claims (they were never implemented).
 
 ### v1.1.0 — 2026-08-18
 - **Fix:** PIN unlock now actually works after a cold start. It previously only re-used an in-memory session key that was always `null` whenever the unlock screen appeared, so a correct PIN was always rejected. The vault key is now wrapped with a PIN-derived key and unwrapped on PIN unlock.

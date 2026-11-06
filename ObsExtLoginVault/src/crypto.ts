@@ -4,7 +4,8 @@
 // Algorithm:  AES-256-GCM  (authenticated encryption)
 // Key Derive: PBKDF2-SHA256, 310,000 iterations, 16-byte random salt
 // IV:         12-byte random per encryption
-// Verification: SHA-256(password + salt) stored alongside ciphertext
+// Verification: none stored — a wrong key fails the AES-GCM auth tag, so the
+//               ciphertext is the only oracle (no fast hash for offline guessing)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PBKDF2_ITERATIONS = 310_000;
@@ -12,8 +13,19 @@ const KEY_LENGTH_BITS = 256;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function toBase64(buf: ArrayBuffer): string {
-    return btoa(String.fromCharCode(...new Uint8Array(buf)));
+/**
+ * Chunked so large buffers don't overflow the engine's argument limit
+ * (spreading a whole buffer into String.fromCharCode throws a RangeError
+ * once the vault grows past a few hundred entries, first on mobile/JSC).
+ */
+function toBase64(buf: ArrayBuffer | Uint8Array): string {
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    const CHUNK = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
+    }
+    return btoa(binary);
 }
 
 function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
@@ -97,46 +109,6 @@ export async function unwrapKeyRaw(payload: EncryptedPayload, wrapperKey: Crypto
     );
 }
 
-// ── Verification hash ─────────────────────────────────────────────────────────
-
-/**
- * Returns SHA-256(utf8(password) ++ salt_bytes) as base64.
- * Used to verify the master password on unlock without storing the password itself.
- */
-export async function hashForVerification(password: string, saltB64: string): Promise<string> {
-    const enc = new TextEncoder();
-    const salt = fromBase64(saltB64);
-    const combined = new Uint8Array(enc.encode(password).length + salt.length);
-    combined.set(enc.encode(password), 0);
-    combined.set(salt, enc.encode(password).length);
-
-    const hash = await window.crypto.subtle.digest("SHA-256", combined);
-    return toBase64(hash);
-}
-
-/**
- * Verifies a password against a stored verification hash.
- * Uses constant-time comparison (via subtle.verify) to resist timing attacks.
- */
-export async function verifyPassword(
-    password: string,
-    saltB64: string,
-    storedHashB64: string
-): Promise<boolean> {
-    try {
-        const computed = await hashForVerification(password, saltB64);
-        // Constant-time string comparison via typed array
-        const a = fromBase64(computed);
-        const b = fromBase64(storedHashB64);
-        if (a.length !== b.length) return false;
-        let diff = 0;
-        for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-        return diff === 0;
-    } catch {
-        return false;
-    }
-}
-
 // ── Encryption / Decryption ───────────────────────────────────────────────────
 
 export interface EncryptedPayload {
@@ -187,19 +159,4 @@ export async function decryptData(
     );
 
     return new TextDecoder().decode(plaintextBuf);
-}
-
-// ── PIN hash helpers ──────────────────────────────────────────────────────────
-
-/** Hash a PIN for storage. Same mechanism as password verification hash. */
-export async function hashPIN(pin: string, saltB64: string): Promise<string> {
-    return hashForVerification(pin, saltB64);
-}
-
-export async function verifyPIN(
-    pin: string,
-    saltB64: string,
-    storedHashB64: string
-): Promise<boolean> {
-    return verifyPassword(pin, saltB64, storedHashB64);
 }

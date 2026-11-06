@@ -2,14 +2,14 @@
 // VaultView.ts — Main ItemView: credential list with search & filter
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { ItemView, Menu, Notice, WorkspaceLeaf } from "obsidian";
+import { ItemView, Menu, Notice, setIcon, WorkspaceLeaf } from "obsidian";
 import type LoginVaultPlugin from "../main";
 import type { CredentialEntry } from "../types";
 import { UnlockModal } from "./UnlockModal";
 import { CredentialModal } from "./CredentialModal";
 import { CredentialDetailModal } from "./CredentialDetailModal";
 import { HelpModal } from "./HelpModal";
-import { downloadText } from "./components";
+import { copyWithTimeout, createIconButton, downloadText } from "./components";
 
 export const VAULT_VIEW_TYPE = "login-vault-view";
 
@@ -28,7 +28,9 @@ export class VaultView extends ItemView {
     getIcon(): string { return "shield"; }
 
     async onOpen(): Promise<void> {
-        await this.ensureUnlocked();
+        // Never prompt here: Obsidian restores open views at startup, and a
+        // password dialog on every launch is a nuisance. A locked view shows
+        // an Unlock button; explicit "open vault" actions prompt (see main.ts).
         this.render();
     }
 
@@ -73,12 +75,11 @@ export class VaultView extends ItemView {
     }
 
     private renderLockedState(container: HTMLElement): void {
-        const helpBtn = container.createEl("button", { cls: "lv-icon-btn lv-help-btn-corner", title: "Help" });
-        helpBtn.setText("❓");
+        const helpBtn = createIconButton(container, "help-circle", "Help", "lv-icon-btn lv-help-btn-corner");
         helpBtn.onclick = () => new HelpModal(this.app).open();
 
         const lock = container.createDiv("lv-locked-state");
-        lock.createDiv("lv-lock-icon").setText("🔐");
+        setIcon(lock.createDiv("lv-lock-icon"), "lock");
         lock.createEl("p", { text: "Vault is locked", cls: "lv-lock-text" });
         const btn = lock.createEl("button", { text: "Unlock", cls: "lv-btn-primary" });
         btn.onclick = async () => {
@@ -89,24 +90,18 @@ export class VaultView extends ItemView {
 
     private renderHeader(container: HTMLElement): void {
         const header = container.createDiv("lv-header");
-        header.createEl("span", { text: "🔐 Login Vault", cls: "lv-title" });
+        header.createEl("span", { text: "Login Vault", cls: "lv-title" });
 
         const actions = header.createDiv("lv-header-actions");
 
-        const helpBtn = actions.createEl("button", { cls: "lv-icon-btn", title: "Help" });
-        helpBtn.setText("❓");
+        const helpBtn = createIconButton(actions, "help-circle", "Help");
         helpBtn.onclick = () => new HelpModal(this.app).open();
 
-        const exportBtn = actions.createEl("button", { cls: "lv-icon-btn", title: "Export all to CSV" });
-        exportBtn.setText("⬇️");
+        const exportBtn = createIconButton(actions, "download", "Export all to CSV");
         exportBtn.onclick = () => this.exportCSV();
 
-        const lockBtn = actions.createEl("button", { cls: "lv-icon-btn", title: "Lock vault" });
-        lockBtn.setText("🔒");
-        lockBtn.onclick = () => {
-            this.plugin.auth.lock();
-            this.render();
-        };
+        const lockBtn = createIconButton(actions, "lock", "Lock vault");
+        lockBtn.onclick = () => this.plugin.auth.lock(); // the lock listener re-renders
     }
 
     private exportCSV(): void {
@@ -115,7 +110,7 @@ export class VaultView extends ItemView {
             new Notice("No credentials to export");
             return;
         }
-        new Notice("⚠️ CSV contains plaintext passwords — handle with care!", 5000);
+        new Notice("Warning: the CSV contains plaintext passwords. Store it securely and delete it afterwards.", 6000);
         downloadText(this.plugin.store.exportCSV(), "login-vault-export.csv", "text/csv");
     }
 
@@ -123,7 +118,8 @@ export class VaultView extends ItemView {
         const bar = container.createDiv("lv-search-bar");
         const input = bar.createEl("input", {
             type: "text",
-            placeholder: "🔍 Search credentials…",
+            placeholder: "Search credentials…",
+            attr: { "aria-label": "Search credentials", autocomplete: "off", autocapitalize: "off", spellcheck: "false" },
             cls: "lv-search-input",
         });
         input.value = this.searchQuery;
@@ -166,11 +162,11 @@ export class VaultView extends ItemView {
 
         if (creds.length === 0) {
             const empty = list.createDiv("lv-empty-state");
-            empty.createDiv("lv-empty-icon").setText("🗝️");
+            setIcon(empty.createDiv("lv-empty-icon"), "key-round");
             empty.createEl("p", {
                 text: this.searchQuery
                     ? "No credentials match your search"
-                    : "No credentials yet — click + to add one",
+                    : "Start your vault. Add your first credential with the + button.",
                 cls: "lv-empty-text",
             });
             return;
@@ -184,7 +180,12 @@ export class VaultView extends ItemView {
     private renderCredentialCard(container: HTMLElement, entry: CredentialEntry): void {
         const card = container.createDiv("lv-credential-card");
 
-        const info = card.createDiv("lv-card-info");
+        const main = card.createDiv("lv-card-main");
+        main.setAttribute("role", "button");
+        main.tabIndex = 0;
+        main.setAttribute("aria-label", `Open ${entry.title}`);
+
+        const info = main.createDiv("lv-card-info");
         info.createEl("span", { text: entry.title, cls: "lv-card-title" });
         info.createEl("span", { text: entry.username, cls: "lv-card-username" });
         if (entry.url) {
@@ -193,35 +194,57 @@ export class VaultView extends ItemView {
         }
 
         if (entry.tags?.length) {
-            const tagWrap = card.createDiv("lv-card-tags");
+            const tagWrap = main.createDiv("lv-card-tags");
             for (const tag of entry.tags.slice(0, 3)) {
                 tagWrap.createEl("span", { text: tag, cls: "lv-tag-chip-ro" });
             }
         }
 
-        card.onclick = () => this.openDetail(entry);
+        // Visible actions: the common tasks must not depend on a right-click
+        // or long-press (the context-menu event is unreliable on iOS).
+        const actions = card.createDiv("lv-card-actions");
+        const copyUser = createIconButton(actions, "user", `Copy username for ${entry.title}`);
+        copyUser.onclick = (e) => { e.stopPropagation(); this.copySecret(entry.username, "Username copied"); };
+        const copyPw = createIconButton(actions, "key", `Copy password for ${entry.title}`, "lv-icon-btn lv-icon-btn-accent");
+        copyPw.onclick = (e) => { e.stopPropagation(); this.copySecret(entry.password, "Password copied"); };
+        const more = createIconButton(actions, "more-horizontal", `More actions for ${entry.title}`);
+        more.onclick = (e) => { e.stopPropagation(); this.showMenu(entry, e); };
+
+        main.onclick = () => this.openDetail(entry);
+        main.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); this.openDetail(entry); }
+        });
         card.addEventListener("contextmenu", (e) => {
             e.preventDefault();
-            const menu = new Menu();
-            menu.addItem((item) => {
-                item.setTitle("✏️ Edit").onClick(() => this.openEdit(entry));
-            });
-            menu.addItem((item) => {
-                item.setTitle("📋 Copy Password").onClick(() => {
-                    navigator.clipboard.writeText(entry.password);
-                    new Notice("Password copied");
-                });
-            });
-            menu.addItem((item) => {
-                item.setTitle("🗑️ Delete").onClick(() => this.deleteEntry(entry));
-            });
-            menu.showAtMouseEvent(e);
+            this.showMenu(entry, e);
         });
     }
 
+    private showMenu(entry: CredentialEntry, e: MouseEvent): void {
+        const menu = new Menu();
+        menu.addItem((item) => {
+            item.setTitle("Edit").setIcon("pencil").onClick(() => this.openEdit(entry));
+        });
+        menu.addItem((item) => {
+            item.setTitle("Copy username").setIcon("user").onClick(() => this.copySecret(entry.username, "Username copied"));
+        });
+        menu.addItem((item) => {
+            item.setTitle("Copy password").setIcon("key").onClick(() => this.copySecret(entry.password, "Password copied"));
+        });
+        menu.addItem((item) => {
+            item.setTitle("Delete").setIcon("trash-2").onClick(() => this.deleteEntry(entry));
+        });
+        menu.showAtMouseEvent(e);
+    }
+
+    /** Every copy goes through the clipboard-clear timer. */
+    private copySecret(value: string, message: string): void {
+        copyWithTimeout(value, this.plugin.settings.clipboardClearSeconds);
+        new Notice(message);
+    }
+
     private renderFAB(container: HTMLElement): void {
-        const fab = container.createEl("button", { cls: "lv-fab", text: "+" });
-        fab.title = "Add credential";
+        const fab = createIconButton(container, "plus", "Add credential", "lv-fab");
         fab.onclick = () => this.openAdd();
     }
 
@@ -238,7 +261,8 @@ export class VaultView extends ItemView {
     }
 
     private openAdd(): void {
-        const key = this.plugin.auth.getSessionKey()!;
+        const key = this.plugin.auth.getSessionKey();
+        if (!key) { this.render(); return; }
         new CredentialModal(
             this.app,
             this.plugin.store,
@@ -249,7 +273,8 @@ export class VaultView extends ItemView {
     }
 
     private openEdit(entry: CredentialEntry): void {
-        const key = this.plugin.auth.getSessionKey()!;
+        const key = this.plugin.auth.getSessionKey();
+        if (!key) { this.render(); return; }
         new CredentialModal(
             this.app,
             this.plugin.store,
@@ -261,10 +286,15 @@ export class VaultView extends ItemView {
     }
 
     private async deleteEntry(entry: CredentialEntry): Promise<void> {
-        const key = this.plugin.auth.getSessionKey()!;
-        await this.plugin.store.deleteCredential(entry.id, key);
-        new Notice(`Deleted "${entry.title}"`);
-        this.render();
+        const key = this.plugin.auth.getSessionKey();
+        if (!key) { this.render(); return; }
+        try {
+            await this.plugin.store.deleteCredential(entry.id, key);
+            new Notice(`Deleted "${entry.title}"`);
+        } catch (e) {
+            new Notice("Couldn't delete: " + (e as Error).message);
+        }
+        if (!this.plugin.auth.isLocked()) this.render();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

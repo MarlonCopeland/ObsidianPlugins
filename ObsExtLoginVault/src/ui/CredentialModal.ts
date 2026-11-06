@@ -2,16 +2,16 @@
 // CredentialModal.ts — Add / Edit credential form
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { App, Modal, Notice } from "obsidian";
+import { App, Notice } from "obsidian";
 import type { CredentialEntry, PluginSettings } from "../types";
 import type { CredentialStore } from "../store";
 import { checkStrength, generatePassword } from "../password-gen";
-import { createPasswordField, createTagChip, renderStrengthBar } from "./components";
+import { createPasswordField, createTagChip, renderStrengthBar, SecretModal } from "./components";
 import { PasswordGenModal } from "./PasswordGenModal";
 
 type SaveCallback = (entry: CredentialEntry) => void;
 
-export class CredentialModal extends Modal {
+export class CredentialModal extends SecretModal {
     private store: CredentialStore;
     private settings: PluginSettings;
     private existingEntry?: CredentialEntry;
@@ -40,12 +40,12 @@ export class CredentialModal extends Modal {
     onOpen(): void {
         const { contentEl } = this;
         const isEdit = !!this.existingEntry;
-        this.titleEl.setText(isEdit ? "✏️ Edit Credential" : "➕ Add Credential");
+        this.titleEl.setText(isEdit ? "Edit credential" : "Add credential");
 
         const form = contentEl.createDiv("lv-form");
 
         // Title
-        const titleInput = this.field(form, "Title *", "text", "e.g. GitHub");
+        const titleInput = this.field(form, "Title *", "text", "GitHub");
         titleInput.value = this.existingEntry?.title ?? "";
 
         // Username
@@ -75,14 +75,14 @@ export class CredentialModal extends Modal {
         }
 
         // Generate button
-        const genBtn = form.createEl("button", { text: "🔀 Generate Password", cls: "lv-btn-secondary" });
+        const genBtn = form.createEl("button", { text: "Generate password", cls: "lv-btn-secondary" });
         genBtn.onclick = () => {
             new PasswordGenModal(this.app, this.settings.passwordGenDefaults, (pw) => {
                 pwInput.value = pw;
                 const r = checkStrength(pw);
                 renderStrengthBar(strengthBar, r.score);
                 strengthLabel.setText(r.label);
-            }).open();
+            }, this.settings.clipboardClearSeconds).open();
         };
 
         // URL
@@ -132,9 +132,9 @@ export class CredentialModal extends Modal {
             saveBtn.setText("Saving…");
 
             try {
-                let saved: CredentialEntry;
+                let saved: CredentialEntry | null;
                 if (this.existingEntry) {
-                    await this.store.updateCredential(
+                    saved = await this.store.updateCredential(
                         this.existingEntry.id,
                         {
                             title: titleInput.value.trim(),
@@ -146,7 +146,11 @@ export class CredentialModal extends Modal {
                         },
                         this.sessionKey
                     );
-                    saved = this.store.getCredentialById(this.existingEntry.id)!;
+                    if (!saved) {
+                        new Notice("This entry was deleted on another device, so it couldn't be saved.");
+                        this.close();
+                        return;
+                    }
                 } else {
                     saved = await this.store.addCredential(
                         {
@@ -163,7 +167,7 @@ export class CredentialModal extends Modal {
                 this.onSave(saved);
                 this.close();
             } catch (e) {
-                new Notice("❌ Save failed: " + (e as Error).message);
+                new Notice("Save failed: " + (e as Error).message);
                 saveBtn.disabled = false;
                 saveBtn.setText(isEdit ? "Save Changes" : "Add Credential");
             }
@@ -176,7 +180,12 @@ export class CredentialModal extends Modal {
 
     private field(container: HTMLElement, label: string, type: string, placeholder: string): HTMLInputElement {
         container.createEl("label", { text: label, cls: "lv-field-label" });
-        return container.createEl("input", { type, placeholder, cls: "lv-text-input" });
+        return container.createEl("input", {
+            type,
+            placeholder,
+            cls: "lv-text-input",
+            attr: { autocomplete: "off", autocapitalize: "off", spellcheck: "false" },
+        });
     }
 
     private renderTagChips(area: HTMLElement, input: HTMLInputElement): void {

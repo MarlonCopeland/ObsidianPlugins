@@ -38,20 +38,19 @@ export class ResetVaultModal extends Modal {
     // ── Step 1: Clearly explain what will happen ──────────────────────────────
 
     private renderWarning(container: HTMLElement): void {
-        this.titleEl.setText("⚠️ Reset Vault");
+        this.titleEl.setText("Reset vault");
 
         const box = container.createDiv("lv-reset-warning-box");
         box.createEl("p", {
-            text: "This will permanently destroy your Login Vault:",
+            text: "This will remove your Login Vault from this device and every device it syncs to:",
             cls: "lv-reset-lead",
         });
         const list = box.createEl("ul", { cls: "lv-reset-list" });
         [
-            "All stored credentials will be deleted",
-            "Your master password will be erased",
+            "You will lose access to all stored credentials unless you remember the old master password",
             "Your PIN will be removed",
-            "The encrypted vault file (login-vault.enc) will be deleted",
-            "This action cannot be undone — there is no recovery",
+            "The encrypted vault file (login-vault.enc) moves to the vault trash, and the removal syncs to your other devices",
+            "An encrypted copy stays in the plugin's backups folder on this device",
         ].forEach((item) => list.createEl("li", { text: item }));
 
         box.createEl("p", {
@@ -61,7 +60,7 @@ export class ResetVaultModal extends Modal {
 
         const btnRow = container.createDiv("lv-btn-row");
         const cancelBtn = btnRow.createEl("button", { text: "Cancel", cls: "lv-btn-ghost" });
-        const continueBtn = btnRow.createEl("button", { text: "Continue →", cls: "lv-btn-danger" });
+        const continueBtn = btnRow.createEl("button", { text: "Continue", cls: "lv-btn-danger" });
 
         cancelBtn.onclick = () => this.close();
         continueBtn.onclick = () => {
@@ -73,10 +72,10 @@ export class ResetVaultModal extends Modal {
     // ── Step 2: Type RESET to confirm ─────────────────────────────────────────
 
     private renderConfirm(container: HTMLElement): void {
-        this.titleEl.setText("⚠️ Final Confirmation");
+        this.titleEl.setText("Final confirmation");
 
         container.createEl("p", {
-            text: 'Type RESET in the box below to permanently delete your vault.',
+            text: 'Type RESET in the box below to reset your vault.',
             cls: "lv-reset-lead",
         });
 
@@ -88,8 +87,8 @@ export class ResetVaultModal extends Modal {
         input.focus();
 
         const btnRow = container.createDiv("lv-btn-row");
-        const backBtn = btnRow.createEl("button", { text: "← Back", cls: "lv-btn-ghost" });
-        const resetBtn = btnRow.createEl("button", { text: "🗑️ Delete Everything", cls: "lv-btn-danger" });
+        const backBtn = btnRow.createEl("button", { text: "Back", cls: "lv-btn-ghost" });
+        const resetBtn = btnRow.createEl("button", { text: "Reset vault", cls: "lv-btn-danger" });
         resetBtn.disabled = true;
 
         input.addEventListener("input", () => {
@@ -108,7 +107,7 @@ export class ResetVaultModal extends Modal {
             await this.plugin.resetVault();
             this.close();
         } catch (e) {
-            new Notice("❌ Reset failed: " + (e as Error).message);
+            new Notice("Reset failed: " + (e as Error).message);
         }
     }
 }

@@ -1,7 +1,7 @@
 {
   "id": "login-vault",
   "name": "Login Vault",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "minAppVersion": "1.4.0",
   "description": "Encrypted password manager inside your vault. Store, retrieve, and generate login credentials securely.",
   "author": "Unjaded Digital Products",

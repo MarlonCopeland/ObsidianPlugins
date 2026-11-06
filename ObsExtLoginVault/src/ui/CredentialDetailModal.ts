@@ -4,9 +4,9 @@
 
 import { App, Modal, Notice } from "obsidian";
 import type { CredentialEntry, PluginSettings } from "../types";
-import { copyWithTimeout } from "./components";
+import { copyWithTimeout, createIconButton, SecretModal, setButtonIcon } from "./components";
 
-export class CredentialDetailModal extends Modal {
+export class CredentialDetailModal extends SecretModal {
     private entry: CredentialEntry;
     private settings: PluginSettings;
     private onEdit: () => void;
@@ -34,7 +34,7 @@ export class CredentialDetailModal extends Modal {
         const body = contentEl.createDiv("lv-detail-body");
 
         // Username row
-        this.detailRow(body, "👤 Username", this.entry.username, false);
+        this.detailRow(body, "Username", this.entry.username, false);
 
         // Password row (masked)
         this.passwordRow(body);
@@ -42,7 +42,7 @@ export class CredentialDetailModal extends Modal {
         // URL row
         if (this.entry.url) {
             const urlRow = body.createDiv("lv-detail-row");
-            urlRow.createEl("span", { text: "🔗 URL", cls: "lv-detail-label" });
+            urlRow.createEl("span", { text: "URL", cls: "lv-detail-label" });
             const link = urlRow.createEl("a", { text: this.entry.url, cls: "lv-detail-url" });
             link.href = this.entry.url;
             link.target = "_blank";
@@ -52,14 +52,14 @@ export class CredentialDetailModal extends Modal {
         // Notes
         if (this.entry.notes) {
             const notesRow = body.createDiv("lv-detail-row lv-detail-notes-row");
-            notesRow.createEl("span", { text: "📝 Notes", cls: "lv-detail-label" });
+            notesRow.createEl("span", { text: "Notes", cls: "lv-detail-label" });
             notesRow.createEl("p", { text: this.entry.notes, cls: "lv-detail-notes" });
         }
 
         // Tags
         if (this.entry.tags?.length) {
             const tagRow = body.createDiv("lv-detail-row");
-            tagRow.createEl("span", { text: "🏷️ Tags", cls: "lv-detail-label" });
+            tagRow.createEl("span", { text: "Tags", cls: "lv-detail-label" });
             const chips = tagRow.createDiv("lv-tag-chips-readonly");
             for (const tag of this.entry.tags) {
                 chips.createEl("span", { text: tag, cls: "lv-tag-chip-ro" });
@@ -81,8 +81,8 @@ export class CredentialDetailModal extends Modal {
 
         // Action buttons
         const btnRow = contentEl.createDiv("lv-detail-actions");
-        const editBtn = btnRow.createEl("button", { text: "✏️ Edit", cls: "lv-btn-secondary" });
-        const deleteBtn = btnRow.createEl("button", { text: "🗑️ Delete", cls: "lv-btn-danger" });
+        const editBtn = btnRow.createEl("button", { text: "Edit", cls: "lv-btn-secondary" });
+        const deleteBtn = btnRow.createEl("button", { text: "Delete", cls: "lv-btn-danger" });
 
         editBtn.onclick = () => {
             this.close();
@@ -110,12 +110,12 @@ export class CredentialDetailModal extends Modal {
     ): void {
         const row = container.createDiv("lv-detail-row");
         row.createEl("span", { text: label, cls: "lv-detail-label" });
-        const valueEl = row.createEl("span", {
+        row.createEl("span", {
             text: masked ? "••••••••" : value,
             cls: "lv-detail-value",
         });
 
-        const copyBtn = row.createEl("button", { text: "📋 Copy", cls: "lv-btn-copy" });
+        const copyBtn = row.createEl("button", { text: "Copy", cls: "lv-btn-copy", attr: { type: "button" } });
 
         copyBtn.onclick = () => {
             const remaining = this.settings.clipboardClearSeconds;
@@ -124,45 +124,45 @@ export class CredentialDetailModal extends Modal {
                 value,
                 remaining,
                 (r) => {
-                    copyBtn.setText(r > 0 ? `⏳ ${r}s` : "📋 Copy");
+                    copyBtn.setText(r > 0 ? `Clears in ${r}s` : "Copy");
                     if (r <= 0) new Notice("Clipboard cleared");
                 },
-                () => { copyBtn.setText("📋 Copy"); }
+                () => { copyBtn.setText("Copy"); }
             );
 
-            copyBtn.setText(remaining > 0 ? `⏳ ${remaining}s` : "✅ Copied");
+            copyBtn.setText(remaining > 0 ? `Clears in ${remaining}s` : "Copied");
             new Notice("Copied to clipboard");
         };
     }
 
     private passwordRow(container: HTMLElement): void {
         const row = container.createDiv("lv-detail-row");
-        row.createEl("span", { text: "🔑 Password", cls: "lv-detail-label" });
+        row.createEl("span", { text: "Password", cls: "lv-detail-label" });
 
         const valueWrap = row.createDiv("lv-detail-pw-wrap");
         const valueEl = valueWrap.createEl("span", { text: "••••••••", cls: "lv-detail-value lv-detail-pw" });
         let revealed = false;
 
-        const revealBtn = valueWrap.createEl("button", { text: "👁", cls: "lv-btn-icon" });
-        revealBtn.title = "Show password";
+        const revealBtn = createIconButton(valueWrap, "eye", "Show password", "lv-btn-icon");
         revealBtn.onclick = () => {
             revealed = !revealed;
             valueEl.setText(revealed ? this.entry.password : "••••••••");
-            revealBtn.setText(revealed ? "🙈" : "👁");
+            setButtonIcon(revealBtn, revealed ? "eye-off" : "eye");
+            revealBtn.setAttribute("aria-label", revealed ? "Hide password" : "Show password");
         };
 
-        const copyBtn = row.createEl("button", { text: "📋 Copy", cls: "lv-btn-copy" });
+        const copyBtn = row.createEl("button", { text: "Copy", cls: "lv-btn-copy", attr: { type: "button" } });
         copyBtn.onclick = () => {
             copyWithTimeout(
                 this.entry.password,
                 this.settings.clipboardClearSeconds,
-                (r) => { copyBtn.setText(r > 0 ? `⏳ ${r}s` : "📋 Copy"); },
+                (r) => { copyBtn.setText(r > 0 ? `Clears in ${r}s` : "Copy"); },
                 () => { new Notice("Clipboard cleared"); }
             );
             copyBtn.setText(
                 this.settings.clipboardClearSeconds > 0
-                    ? `⏳ ${this.settings.clipboardClearSeconds}s`
-                    : "✅ Copied"
+                    ? `Clears in ${this.settings.clipboardClearSeconds}s`
+                    : "Copied"
             );
             new Notice("Password copied to clipboard");
         };
@@ -171,7 +171,7 @@ export class CredentialDetailModal extends Modal {
 
 // ── Confirm Delete sub-modal ──────────────────────────────────────────────────
 
-class ConfirmDeleteModal extends Modal {
+class ConfirmDeleteModal extends SecretModal {
     private title: string;
     private onConfirm: () => void;
 
@@ -182,7 +182,7 @@ class ConfirmDeleteModal extends Modal {
     }
 
     onOpen(): void {
-        this.titleEl.setText("⚠️ Delete Credential");
+        this.titleEl.setText("Delete credential");
         this.contentEl.createEl("p", {
             text: `Are you sure you want to delete "${this.title}"? This cannot be undone.`,
             cls: "lv-confirm-text",

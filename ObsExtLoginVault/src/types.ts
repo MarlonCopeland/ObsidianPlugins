@@ -2,8 +2,6 @@
 // types.ts — Core data interfaces for Login Vault plugin
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { EncryptedPayload } from "./crypto";
-
 export interface CredentialEntry {
     id: string;
     title: string;
@@ -20,7 +18,8 @@ export interface CredentialEntry {
 export interface VaultData {
     version: number;
     salt: string;             // base64, 16 bytes — PBKDF2 salt
-    verificationHash: string; // base64, SHA-256(password + salt) for unlock check
+    /** Legacy (v1.0/1.1 files only). Never written any more — it allowed fast offline password guessing. */
+    verificationHash?: string;
     iv: string;               // base64, 12 bytes — AES-GCM IV
     ciphertext: string;       // base64 — encrypted JSON array of CredentialEntry[]
 }
@@ -38,10 +37,9 @@ export interface PluginSettings {
     autoLockMinutes: number;            // 0 = disabled
     clipboardClearSeconds: number;      // 0 = disabled
     passwordGenDefaults: PasswordGenOptions;
-    pinHash?: string;                   // salted SHA-256 of PIN (base64) — fast pre-check
-    pinSalt?: string;                   // random salt for PIN hash + PIN key derivation (base64)
-    pinWrappedKey?: EncryptedPayload;   // the real vault key, wrapped with a PIN-derived key
     hasMasterPassword: boolean;         // false on first run
+    // Quick-unlock (PIN) material is intentionally NOT here: data.json is synced
+    // to other devices (and Obsidian's servers). It lives in device-local storage.
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {

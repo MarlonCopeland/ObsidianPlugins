@@ -2,26 +2,28 @@
 // PasswordGenModal.ts — Password generator with live preview and strength meter
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { App, Modal, Notice } from "obsidian";
+import { App, Notice } from "obsidian";
 import type { PasswordGenOptions } from "../types";
 import { generatePassword, checkStrength } from "../password-gen";
-import { renderStrengthBar } from "./components";
+import { copyWithTimeout, renderStrengthBar, SecretModal } from "./components";
 
-export class PasswordGenModal extends Modal {
+export class PasswordGenModal extends SecretModal {
     private options: PasswordGenOptions;
     private onUse?: (password: string) => void;
+    private clearSeconds: number;
     private currentPassword = "";
 
-    constructor(app: App, defaultOptions: PasswordGenOptions, onUse?: (password: string) => void) {
+    constructor(app: App, defaultOptions: PasswordGenOptions, onUse?: (password: string) => void, clearSeconds = 30) {
         super(app);
         // Clone options to avoid mutating the defaults
         this.options = { ...defaultOptions };
         this.onUse = onUse;
+        this.clearSeconds = clearSeconds;
         this.modalEl.addClass("lv-gen-modal");
     }
 
     onOpen(): void {
-        this.titleEl.setText("🔀 Password Generator");
+        this.titleEl.setText("Password generator");
         this.render();
     }
 
@@ -64,11 +66,11 @@ export class PasswordGenModal extends Modal {
 
         // Toggles
         const toggleDefs: Array<{ key: keyof PasswordGenOptions; label: string }> = [
-            { key: "uppercase", label: "A-Z Uppercase" },
-            { key: "lowercase", label: "a-z Lowercase" },
-            { key: "numbers", label: "0-9 Numbers" },
-            { key: "symbols", label: "!@# Symbols" },
-            { key: "excludeAmbiguous", label: "Exclude Ambiguous (0, O, l, 1)" },
+            { key: "uppercase", label: "A-Z uppercase" },
+            { key: "lowercase", label: "a-z lowercase" },
+            { key: "numbers", label: "0-9 numbers" },
+            { key: "symbols", label: "!@# symbols" },
+            { key: "excludeAmbiguous", label: "Exclude ambiguous (0, O, l, 1)" },
         ];
 
         for (const { key, label } of toggleDefs) {
@@ -85,19 +87,19 @@ export class PasswordGenModal extends Modal {
         // Action buttons
         const btnRow = contentEl.createDiv("lv-gen-btn-row");
 
-        const regenBtn = btnRow.createEl("button", { text: "🔄 Regenerate", cls: "lv-btn-secondary" });
+        const regenBtn = btnRow.createEl("button", { text: "Regenerate", cls: "lv-btn-secondary" });
         regenBtn.onclick = () => refresh();
 
-        const copyBtn = btnRow.createEl("button", { text: "📋 Copy", cls: "lv-btn-secondary" });
+        const copyBtn = btnRow.createEl("button", { text: "Copy", cls: "lv-btn-secondary" });
         copyBtn.onclick = () => {
-            navigator.clipboard.writeText(this.currentPassword);
-            new Notice("Password copied!");
-            copyBtn.setText("✅ Copied");
-            setTimeout(() => copyBtn.setText("📋 Copy"), 2000);
+            copyWithTimeout(this.currentPassword, this.clearSeconds);
+            new Notice("Password copied");
+            copyBtn.setText("Copied");
+            setTimeout(() => copyBtn.setText("Copy"), 2000);
         };
 
         if (this.onUse) {
-            const useBtn = btnRow.createEl("button", { text: "✅ Use This", cls: "lv-btn-primary" });
+            const useBtn = btnRow.createEl("button", { text: "Use this", cls: "lv-btn-primary" });
             useBtn.onclick = () => {
                 this.onUse?.(this.currentPassword);
                 this.close();
